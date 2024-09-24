@@ -107,9 +107,7 @@ func (m *DataTemplateManager) SetClusterOwnerRef(cluster *clusterv1.Cluster) err
 func (m *DataTemplateManager) getIndexes(ctx context.Context) (map[int]string, error) {
 	m.Log.Info("Fetching Metal3Data objects")
 
-	// start from empty maps
-	m.DataTemplate.Status.Indexes = make(map[string]int)
-
+	// start from an empty map
 	indexes := make(map[int]string)
 
 	// get list of Metal3Data objects
@@ -141,7 +139,6 @@ func (m *DataTemplateManager) getIndexes(ctx context.Context) (map[int]string, e
 		if dataObject.Spec.Claim.Name != "" {
 			claimName = dataObject.Spec.Claim.Name
 		}
-		m.DataTemplate.Status.Indexes[claimName] = dataObject.Spec.Index
 		indexes[dataObject.Spec.Index] = claimName
 	}
 	m.updateStatusTimestamp()
@@ -177,6 +174,16 @@ func (m *DataTemplateManager) UpdateDatas(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
+	// initiate "unseen claims"
+	// (we're going to update it below, to let us identify which claims do not exist anymore)
+	unseenClaims := make(map[string]int, len(indexes))
+	for index, claimName := range indexes {
+		unseenClaims[claimName] = index
+	}
+
+	// start Status.Indexes from an empty map
+	m.DataTemplate.Status.Indexes = make(map[string]int)
+
 	// get list of Metal3DataClaim objects
 	dataClaimObjects := infrav1.Metal3DataClaimList{}
 	// without this ListOption, all namespaces would be including in the listing
@@ -189,13 +196,16 @@ func (m *DataTemplateManager) UpdateDatas(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	// Iterate over the Metal3Data objects to find all indexes and objects
+	// Iterate over the Metal3DataClaim objects to find all indexes and objects
 	for _, dataClaim := range dataClaimObjects.Items {
 		dataClaim := dataClaim
 		// If DataTemplate does not point to this object, discard
 		if dataClaim.Spec.Template.Name != m.DataTemplate.Name {
 			continue
 		}
+
+		// remove the claim from unseenClaims
+		delete(unseenClaims, dataClaim.Name)
 
 		if dataClaim.Status.RenderedData != nil && dataClaim.DeletionTimestamp.IsZero() {
 			continue
@@ -206,6 +216,13 @@ func (m *DataTemplateManager) UpdateDatas(ctx context.Context) (int, error) {
 			return 0, err
 		}
 	}
+
+	// Remove non-existing claims from m.DataTemplate.Status.Indexes and indexes
+	for claimName, index := range unseenClaims {
+        delete(m.DataTemplate.Status.Indexes, claimName)
+		delete(indexes, index)
+    }
+
 	m.updateStatusTimestamp()
 	return len(indexes), nil
 }
